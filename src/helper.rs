@@ -1,6 +1,6 @@
-use std::io::{self, Read, Write};
 use smallvec::{Array, SmallVec};
-
+use std::io::{self, Read, Write};
+use std::marker::PhantomData;
 
 /// When creating a `std::io::Read` wrapper that performs any form of processing, you can quickly
 /// run into issues when a buffer does not have enough space for the what you want to write to it.
@@ -11,20 +11,26 @@ use smallvec::{Array, SmallVec};
 /// Additionally, `OverflowBuffer` is implemented using `SmallVec` so frequent small overflows will
 /// not result in allocation to the heap.
 pub struct OverflowBuffer<const N: usize = 8>
-    where [u8; N]: Array {
+where
+    [u8; N]: Array,
+{
     buffer: SmallVec<[u8; N]>,
     index: usize,
 }
 
 impl<const N: usize> Default for OverflowBuffer<N>
-    where [u8; N]: Array<Item=u8> {
+where
+    [u8; N]: Array<Item = u8>,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl<const N: usize> OverflowBuffer<N>
-    where [u8; N]: Array<Item=u8> {
+where
+    [u8; N]: Array<Item = u8>,
+{
     pub fn new() -> Self {
         OverflowBuffer {
             buffer: SmallVec::default(),
@@ -47,7 +53,10 @@ impl<const N: usize> OverflowBuffer<N>
         copy_len
     }
 
-    pub fn for_buffer<'a: 'b, 'b>(&'a mut self, buffer: &'b mut [u8]) -> Result<OverflowingWriter<'a, 'b, N>, usize> {
+    pub fn for_buffer<'a: 'b, 'b>(
+        &'a mut self,
+        buffer: &'b mut [u8],
+    ) -> Result<OverflowingWriter<'a, 'b, N>, usize> {
         // Copy remaining overflow into buffer
         let write_len = self.take_overflow(buffer);
 
@@ -64,14 +73,18 @@ impl<const N: usize> OverflowBuffer<N>
 }
 
 impl<const N: usize> Read for OverflowBuffer<N>
-    where [u8; N]: Array<Item=u8> {
+where
+    [u8; N]: Array<Item = u8>,
+{
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         Ok(self.take_overflow(buffer))
     }
 }
 
 impl<const N: usize> Write for OverflowBuffer<N>
-    where [u8; N]: Array<Item=u8> {
+where
+    [u8; N]: Array<Item = u8>,
+{
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.buffer.extend_from_slice(buf);
         Ok(buf.len())
@@ -82,16 +95,19 @@ impl<const N: usize> Write for OverflowBuffer<N>
     }
 }
 
-
 pub struct OverflowingWriter<'a, 'b, const N: usize = 8>
-    where [u8; N]: Array<Item=u8> {
+where
+    [u8; N]: Array<Item = u8>,
+{
     buffer: &'b mut [u8],
     index: usize,
     overflow: &'a mut OverflowBuffer<N>,
 }
 
 impl<'a, 'b, const N: usize> OverflowingWriter<'a, 'b, N>
-    where [u8; N]: Array<Item=u8> {
+where
+    [u8; N]: Array<Item = u8>,
+{
     pub fn ok(self) -> io::Result<usize> {
         Ok(self.index)
     }
@@ -102,7 +118,9 @@ impl<'a, 'b, const N: usize> OverflowingWriter<'a, 'b, N>
 }
 
 impl<'a, 'b, const N: usize> Write for OverflowingWriter<'a, 'b, N>
-    where [u8; N]: Array<Item=u8> {
+where
+    [u8; N]: Array<Item = u8>,
+{
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // Copy as much of buf to output buffer as possible
         let copy_len = (self.buffer.len() - self.index).min(buf.len());
@@ -122,5 +140,53 @@ impl<'a, 'b, const N: usize> Write for OverflowingWriter<'a, 'b, N>
     }
 }
 
+pub trait AbortingFromIterator<T, E>: Iterator<Item = Result<T, E>> {
+    fn aborting_from_iter<F: FromIterator<T>>(self) -> Result<F, E>;
+}
 
+impl<I, T, E> AbortingFromIterator<T, E> for I
+where
+    I: Iterator<Item = Result<T, E>>,
+{
+    fn aborting_from_iter<F: FromIterator<T>>(self) -> Result<F, E> {
+        let mut unwrapper = AbortingIter {
+            iter: self,
+            err: None,
+            _phantom: PhantomData,
+        };
 
+        let res = F::from_iter(&mut unwrapper);
+
+        match unwrapper.err {
+            Some(e) => Err(e),
+            None => Ok(res),
+        }
+    }
+}
+
+struct AbortingIter<I, T, E> {
+    iter: I,
+    err: Option<E>,
+    _phantom: PhantomData<T>,
+}
+
+impl<I, T, E> Iterator for AbortingIter<I, T, E>
+where
+    I: Iterator<Item = Result<T, E>>,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.err.is_some() {
+            return None;
+        }
+
+        match self.iter.next()? {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.err = Some(e);
+                None
+            }
+        }
+    }
+}
