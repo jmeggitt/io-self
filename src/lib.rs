@@ -1,9 +1,17 @@
 use std::io;
 use std::io::{Cursor, Read, Write};
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+use std::rc::Rc;
+use std::sync::Arc;
+use byteorder::ReadBytesExt;
 
 pub mod grammar;
 pub mod helper;
 pub mod positional;
+
+#[doc(hidden)]
+pub mod derive_util;
 
 use helper::AbortingFromIterator;
 pub use positional::PositionAware;
@@ -27,6 +35,91 @@ pub trait ReadSelf: Sized {
     }
 }
 
+impl ReadSelf for u8 {
+    fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self> {
+        buffer.read_u8()
+    }
+}
+
+impl ReadSelf for i8 {
+    fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self> {
+        buffer.read_i8()
+    }
+}
+
+impl<T: ?Sized> ReadSelf for PhantomData<T> {
+    fn read_from<B: Read + PositionAware>(_: &mut B) -> io::Result<Self> {
+        Ok(PhantomData)
+    }
+}
+
+impl ReadSelf for () {
+    fn read_from<B: Read + PositionAware>(_: &mut B) -> io::Result<Self> {
+        Ok(())
+    }
+}
+
+impl<T: ReadSelf> ReadSelf for Box<T> {
+    fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self> {
+        Ok(Box::new(T::read_from(buffer)?))
+    }
+}
+
+impl<T: ReadSelf> ReadSelf for Arc<T> {
+    fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self> {
+        Ok(Arc::new(T::read_from(buffer)?))
+    }
+}
+
+impl<T: ReadSelf> ReadSelf for Rc<T> {
+    fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self> {
+        Ok(Rc::new(T::read_from(buffer)?))
+    }
+}
+
+impl<T: ReadSelf, const N: usize> ReadSelf for [T; N] {
+    fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self> {
+        unsafe {
+            let mut array = MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init();
+
+            for item in array.iter_mut().take(N) {
+                item.write(T::read_from(buffer)?);
+            }
+
+            Ok((&array as *const _ as *const [T; N]).read())
+        }
+    }
+}
+
+
+
+
+
+#[doc(hidden)]
+macro_rules! impl_read_tuple {
+    ($($generic:ident)*) => {
+        impl<$($generic: ?Sized + ReadSelf),*> ReadSelf for ($($generic),*) {
+            fn read_from<Buf: Read + PositionAware>(buffer: &mut Buf) -> io::Result<Self> {
+                Ok(($(<$generic as ReadSelf>::read_from(buffer)?),*))
+            }
+        }
+    };
+}
+
+impl_read_tuple! {A B}
+impl_read_tuple! {A B C}
+impl_read_tuple! {A B C D}
+impl_read_tuple! {A B C D E}
+impl_read_tuple! {A B C D E F}
+impl_read_tuple! {A B C D E F G}
+impl_read_tuple! {A B C D E F G H}
+impl_read_tuple! {A B C D E F G H I}
+impl_read_tuple! {A B C D E F G H I J}
+impl_read_tuple! {A B C D E F G H I J K}
+impl_read_tuple! {A B C D E F G H I J K L}
+impl_read_tuple! {A B C D E F G H I J K L M}
+impl_read_tuple! {A B C D E F G H I J K L M N}
+
 /// At times it may be desirable to be able to reuse existing memory without needing to copy
 /// `Self`. This variant works similarly to `ReadSelf`, but reads into an existing instance of
 /// `Self`.
@@ -40,7 +133,7 @@ impl<T: ReadIntoSelf> ReadIntoSelf for [T] {
     }
 }
 
-impl<'a, T: 'a + ReadIntoSelf, I: Iterator<Item = &'a mut T>> ReadIntoSelf for I {
+impl<'a, T: 'a + ReadIntoSelf, I: Iterator<Item=&'a mut T>> ReadIntoSelf for I {
     fn read_into<B: Read + PositionAware>(&mut self, buffer: &mut B) -> io::Result<()> {
         for item in self {
             item.read_into(buffer)?;
@@ -50,5 +143,5 @@ impl<'a, T: 'a + ReadIntoSelf, I: Iterator<Item = &'a mut T>> ReadIntoSelf for I
 }
 
 pub trait WriteSelf: Sized {
-    fn write_self<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()>;
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()>;
 }

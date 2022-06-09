@@ -1,5 +1,5 @@
 use smallvec::{Array, SmallVec};
-use std::io::{self, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::marker::PhantomData;
 
 /// When creating a `std::io::Read` wrapper that performs any form of processing, you can quickly
@@ -139,6 +139,51 @@ where
         Ok(())
     }
 }
+
+/// A wrapper for a reader which reads until some byte is reached. However this is just a
+/// workaround for when a generic type only implements `Read`. Using `BufRead::read_until` is always
+/// preferable. This if only for cases where you can't necessarily read farther.
+pub struct ByteTerminatedReader<R> {
+    reader: R,
+    terminator: u8,
+    finished: bool,
+}
+
+impl<R> ByteTerminatedReader<R> {
+    pub fn new(reader: R, terminator: u8) -> Self {
+        ByteTerminatedReader { reader, terminator, finished: false }
+    }
+}
+
+impl<R: Read> Read for ByteTerminatedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.finished {
+            return Ok(0)
+        }
+
+        let mut index = 0;
+        while index < buf.len() {
+            match self.reader.read(&mut buf[index..index + 1]) {
+                Ok(0) => break,
+                Ok(_) => {
+                    index += 1;
+                    if buf[index - 1] == self.terminator {
+                        self.finished = true;
+                        break
+                    }
+                }
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(index)
+    }
+}
+
+
+
+
 
 pub trait AbortingFromIterator<T, E>: Iterator<Item = Result<T, E>> {
     fn aborting_from_iter<F: FromIterator<T>>(self) -> Result<F, E>;

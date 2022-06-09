@@ -1,10 +1,18 @@
+use std::ffi::{CStr, CString};
 use crate::{PositionAware, ReadIntoSelf, ReadSelf, WriteSelf};
 use std::io;
 use std::io::{Read, Write};
+use std::ops::{Deref, DerefMut};
 
 #[macro_export]
 macro_rules! grammar {
-    ($($(#[$($macros:tt)+])* $pub:vis struct $name:ident { $($(#[$($field_macros:tt)+])* $field_vis:vis $field:ident: $type:ty),* $(,)? })+) => {
+    // Case where multiple structs are defined within the macro
+    (
+        $($(#[$($macros:tt)+])*
+        $pub:vis struct $name:ident {
+            $($(#[$($field_macros:tt)+])* $field_vis:vis $field:ident: $type:ty),* $(,)?
+        })+
+    ) => {
         $(simple_grammar!{
             @impl $(#[$($macros)+])*
             $pub struct $name {
@@ -13,15 +21,22 @@ macro_rules! grammar {
             }
         })+
     };
-    (@impl $(#[$($macros:tt)+])* $pub:vis struct $name:ident { $($(#[$($field_macros:tt)+])* $field_vis:vis $field:ident: $type:ty),* $(,)? }) => {
+    // Implement the type and trait for a single struct
+    (@impl
+        $(#[$($macros:tt)+])*
+        $pub:vis struct $name:ident { $
+            ($(#[$($field_macros:tt)+])* $field_vis:vis $field:ident: $type:ty),* $(,)?
+        }
+    ) => {
+        // Define the struct as passed to the macro
         $(#[$($macros)+])*
         $pub struct $name {
-                $($(#[$($field_macros)+])*
-                $field_vis $field: $type),*
+            $($(#[$($field_macros)+])*
+            $field_vis $field: $type),*
         }
 
-        impl Readable for $name {
-            fn read<T: Read>(buffer: &mut T) -> io::Result<Self> {
+        impl $crate::ReadSelf for $name {
+            fn read<T: std::io::Read>(buffer: &mut T) -> io::Result<Self> {
                 Ok($name { $($field: <$type as Readable>::read(buffer)?),+ })
             }
         }
@@ -75,7 +90,7 @@ impl<const N: usize> ReadIntoSelf for Padding<N> {
 }
 
 impl<const N: usize> WriteSelf for Padding<N> {
-    fn write_self<B: Write>(&self, buffer: &mut B) -> io::Result<()> {
+    fn write_to<B: Write>(&self, buffer: &mut B) -> io::Result<()> {
         write_padding(buffer, 0, N)
         // Self::apply_padding(buffer, 0)
     }
@@ -126,8 +141,56 @@ impl<const N: u64, const P: u8> ReadIntoSelf for PadToAlign<N, P> {
 }
 
 impl<const N: u64, const P: u8> WriteSelf for PadToAlign<N, P> {
-    fn write_self<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
         let padding = Self::padding_for(buffer.position()?) as usize;
         write_padding(buffer, P, padding)
+    }
+}
+
+
+pub struct ByteTerminatedVec<T, const TERMINATOR: u8 = b'\0'> {
+    inner: Vec<T>,
+}
+
+impl<T, const N: u8> From<ByteTerminatedVec<T, N>> for Vec<T> {
+    fn from(x: ByteTerminatedVec<T, N>) -> Self {
+        x.inner
+    }
+}
+
+impl<T, const N: u8> Deref for ByteTerminatedVec<T, N> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T, const N: u8> DerefMut for ByteTerminatedVec<T, N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+
+
+impl ReadSelf for CString {
+    fn read_from<B: Read + PositionAware>(_buffer: &mut B) -> io::Result<Self> {
+        // let mut bytes = Vec::new();
+        // buffer.read_until(b'\0', &mut bytes)?;
+
+        todo!()
+    }
+}
+
+impl WriteSelf for CString {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        buffer.write_all(self.as_bytes_with_nul())
+    }
+}
+
+impl<'a> WriteSelf for &'a CStr {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        buffer.write_all(self.to_bytes_with_nul())
     }
 }
