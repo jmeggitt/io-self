@@ -2,7 +2,7 @@
 use io_self_derive::{ReadSelf, WriteSelf};
 
 #[derive(ReadSelf, WriteSelf)]
-#[io_self(endian = "little", tagged = "u8", length_prefix = "u32")]
+#[io_self(endian = "little", tag = "u8", length_prefix = "u32")]
 pub enum Foo {
     #[io_self(tag = "0x01")]
     Bar(u16, i64),

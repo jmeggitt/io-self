@@ -1,5 +1,5 @@
-use crate::attr::{Endian, Opts, VariantOpts};
-use darling::{FromDeriveInput, FromVariant};
+use crate::attr::{Endian, FieldOpts, Opts, VariantOpts};
+use darling::{FromDeriveInput, FromField, FromVariant};
 use proc_macro2::{self, Ident, TokenStream};
 use quote::{quote, quote_spanned};
 use std::str::FromStr;
@@ -77,19 +77,42 @@ fn read_for_type(name: &Type, endian: Option<Endian>) -> TokenStream {
     }
 }
 
-fn derive_read_fields(data_fields: &Fields, endian: Option<Endian>) -> TokenStream {
+fn derive_read_fields(data_fields: &Fields, opts: &Opts) -> TokenStream {
     match data_fields {
         Fields::Named(fields) => {
             let assigned_fields = fields.named.iter().map(|f| {
-                let name = &f.ident;
-                let formula = read_for_type(&f.ty, endian);
-                quote_spanned!(f.span() => #name: #formula)
+                let field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
+                if let Some(prefix) = field_opts.length_prefix_type() {
+                    let read_len = read_for_type(&prefix, opts.endianness());
+                    let item_count = try_from(
+                        &parse_quote!(usize),
+                        &prefix,
+                        &quote!(raw_len),
+                    );
+
+                    let approach = opts.trait_usage(true);
+                    let name = &f.ident;
+
+                    quote_spanned!(f.span() => #name: {
+                        let raw_len = #read_len;
+                        let length = #item_count;
+
+                        ::io_self::derive_util::read_with_length(buffer, length, <_ as #approach>::read_from)?
+                    })
+                } else {
+                    let name = &f.ident;
+                    let formula = read_for_type(&f.ty, opts.endianness());
+                    quote_spanned!(f.span() => #name: #formula)
+                }
             });
 
             quote_spanned!(data_fields.span() => { #(#assigned_fields,)* })
         }
         Fields::Unnamed(fields) => {
-            let assigned_fields = fields.unnamed.iter().map(|f| read_for_type(&f.ty, endian));
+            let assigned_fields = fields
+                .unnamed
+                .iter()
+                .map(|f| read_for_type(&f.ty, opts.endianness()));
             quote_spanned!(data_fields.span() => ( #(#assigned_fields,)*) )
         }
         Fields::Unit => quote_spanned!(data_fields.span() => ),
@@ -99,7 +122,7 @@ fn derive_read_fields(data_fields: &Fields, endian: Option<Endian>) -> TokenStre
 fn read_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
     match data {
         Data::Struct(struct_data) => {
-            let fields = derive_read_fields(&struct_data.fields, opts.endianness());
+            let fields = derive_read_fields(&struct_data.fields, &opts);
             quote_spanned!(name.span() => #name #fields)
         }
         Data::Union(_) => panic!("Unable to derive for union"),
@@ -112,11 +135,12 @@ fn read_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
             let tag = read_for_type(&tag_type, endian);
 
             let variants = enum_data.variants.iter().map(|variant| {
-                let opts = VariantOpts::from_variant(variant).expect("Unexpect attribute fields");
-                let tag = opts.tag();
+                let tag = VariantOpts::from_variant(variant)
+                    .expect("Unexpect attribute fields")
+                    .tag();
 
                 let variant_name = &variant.ident;
-                let fields = derive_read_fields(&variant.fields, endian);
+                let fields = derive_read_fields(&variant.fields, &opts);
                 quote!(#tag => #name::#variant_name #fields)
             });
 
@@ -206,17 +230,33 @@ fn derive_field_match(data_fields: &Fields) -> TokenStream {
 fn derive_write_fields(
     data_fields: &Fields,
     name: &TokenStream,
-    endian: Option<Endian>,
+    opts: &Opts,
     use_placeholders: bool,
 ) -> TokenStream {
     match data_fields {
         Fields::Named(fields) => {
             let assigned_fields = fields.named.iter().map(|f| {
                 let ident = &f.ident;
-                if use_placeholders {
-                    write_for_type(&f.ty, &quote!(#ident), endian)
+                let ident = if use_placeholders {
+                    quote!(#ident)
                 } else {
-                    write_for_type(&f.ty, &quote!(#name.#ident), endian)
+                    quote!(#name.#ident)
+                };
+
+                let field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
+                if let Some(prefix) = field_opts.length_prefix_type() {
+                    let approach = opts.trait_usage(false);
+                    let ty = &f.ty;
+
+                    quote_spanned!(f.span() =>
+                        ::io_self::derive_util::write_with_prefix::<#prefix, #ty, _, _, _, _>(
+                            #ident,
+                            buffer,
+                            <_ as #approach>::write_to,
+                            <_ as #approach>::write_to)?;
+                    )
+                } else {
+                    write_for_type(&f.ty, &ident, opts.endianness())
                 }
             });
 
@@ -230,7 +270,7 @@ fn derive_write_fields(
                     let index = Index::from(idx);
                     quote!(#name.#index)
                 };
-                write_for_type(&f.ty, &path, endian)
+                write_for_type(&f.ty, &path, opts.endianness())
             });
             quote_spanned!(data_fields.span() => #(#assigned_fields)* )
         }
@@ -242,7 +282,7 @@ fn write_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
     match data {
         Data::Struct(struct_data) => {
             let parent = quote!(&self);
-            derive_write_fields(&struct_data.fields, &parent, opts.endianness(), false)
+            derive_write_fields(&struct_data.fields, &parent, &opts, false)
         }
         Data::Union(_) => panic!("Unable to derive for union"),
         Data::Enum(enum_data) => {
@@ -252,13 +292,14 @@ fn write_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
             let endian = opts.endianness();
 
             let variants = enum_data.variants.iter().map(|variant| {
-                let opts = VariantOpts::from_variant(variant).expect("Unexpect attribute fields");
-                let tag = opts.tag();
+                let tag = VariantOpts::from_variant(variant)
+                    .expect("Unexpect attribute fields")
+                    .tag();
                 let write_tag = write_for_type(&tag_type, &quote!(&variant_tag), endian);
 
                 let variant_name = &variant.ident;
                 let variant_match = derive_field_match(&variant.fields);
-                let fields = derive_write_fields(&variant.fields, &quote!(), endian, true);
+                let fields = derive_write_fields(&variant.fields, &quote!(), &opts, true);
                 quote! {
                     #name::#variant_name #variant_match => {
                         let variant_tag: #tag_type = #tag;
@@ -345,5 +386,6 @@ mod tests {
         test_cases.pass("tests/05-array-endian.rs");
         test_cases.pass("tests/06-tagged-enum.rs");
         test_cases.pass("tests/07-length-prefix.rs");
+        test_cases.pass("tests/08-prefixed-vec.rs");
     }
 }

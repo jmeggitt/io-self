@@ -1,4 +1,4 @@
-use darling::{FromDeriveInput, FromVariant};
+use darling::{FromDeriveInput, FromField, FromVariant};
 use proc_macro2::{self, TokenStream};
 use quote::{quote, ToTokens};
 use std::str::FromStr;
@@ -8,13 +8,14 @@ use syn::Type;
 #[darling(default, attributes(io_self), forward_attrs(allow, doc, cfg))]
 pub struct Opts {
     endian: Option<String>,
-    tagged: Option<String>,
+    tag: Option<String>,
     length_prefix: Option<String>,
 }
 
 impl Opts {
     pub fn length_prefix_type(&self) -> Option<Type> {
-        let prefix = TokenStream::from_str(self.length_prefix.as_ref()?).expect("test");
+        let prefix = TokenStream::from_str(self.length_prefix.as_ref()?)
+            .expect("Unable to tokenize enum length prefix");
         Some(syn::parse2(prefix).expect("Expected type"))
     }
 
@@ -46,7 +47,7 @@ impl Opts {
     }
 
     pub fn tag_type(&self) -> Option<Type> {
-        let tag = TokenStream::from_str(self.tagged.as_ref()?).unwrap();
+        let tag = TokenStream::from_str(self.tag.as_ref()?).unwrap();
         Some(syn::parse2(tag).expect("Expected type"))
     }
 }
@@ -75,5 +76,19 @@ impl ToTokens for Endian {
             Endian::Little => tokens.extend(quote!(io_self::derive_util::byteorder::LittleEndian)),
             Endian::Big => tokens.extend(quote!(io_self::derive_util::byteorder::BigEndian)),
         }
+    }
+}
+
+#[derive(FromField, Default)]
+#[darling(default, attributes(io_self), forward_attrs(allow, doc, cfg))]
+pub struct FieldOpts {
+    length_prefix: Option<String>,
+}
+
+impl FieldOpts {
+    pub fn length_prefix_type(&self) -> Option<Type> {
+        let prefix = TokenStream::from_str(self.length_prefix.as_ref()?)
+            .expect("Unable to tokenize field length prefix");
+        Some(syn::parse2(prefix).expect("Expected type"))
     }
 }

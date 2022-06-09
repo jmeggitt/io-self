@@ -1,6 +1,6 @@
 [package]
 name = "io_self"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jasper Meggitt <jasper.meggitt@gmail.com>"]
 edition = "2021"
 description = "A simple system for encoding/decoding binary data based on a predefined format"
