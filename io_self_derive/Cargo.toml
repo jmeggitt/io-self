@@ -1,7 +1,9 @@
 [package]
 name = "io_self_derive"
 version = "0.1.0"
+authors = ["Jasper Meggitt <jasper.meggitt@gmail.com>"]
 edition = "2021"
+description = "Derive macros for the io_self crate."
 license = "MIT"
 repository = "https://github.com/jmeggitt/io-self"
 readme = "../readme.md"
