@@ -151,14 +151,18 @@ pub struct ByteTerminatedReader<R> {
 
 impl<R> ByteTerminatedReader<R> {
     pub fn new(reader: R, terminator: u8) -> Self {
-        ByteTerminatedReader { reader, terminator, finished: false }
+        ByteTerminatedReader {
+            reader,
+            terminator,
+            finished: false,
+        }
     }
 }
 
 impl<R: Read> Read for ByteTerminatedReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.finished {
-            return Ok(0)
+            return Ok(0);
         }
 
         let mut index = 0;
@@ -169,7 +173,7 @@ impl<R: Read> Read for ByteTerminatedReader<R> {
                     index += 1;
                     if buf[index - 1] == self.terminator {
                         self.finished = true;
-                        break
+                        break;
                     }
                 }
                 Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
@@ -180,10 +184,6 @@ impl<R: Read> Read for ByteTerminatedReader<R> {
         Ok(index)
     }
 }
-
-
-
-
 
 pub trait AbortingFromIterator<T, E>: Iterator<Item = Result<T, E>> {
     fn aborting_from_iter<F: FromIterator<T>>(self) -> Result<F, E>;

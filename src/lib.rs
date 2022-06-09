@@ -1,10 +1,10 @@
+use byteorder::{ReadBytesExt, WriteBytesExt};
 use std::io;
 use std::io::{Cursor, Read, Write};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::rc::Rc;
 use std::sync::Arc;
-use byteorder::ReadBytesExt;
 
 pub mod grammar;
 pub mod helper;
@@ -19,8 +19,8 @@ pub use positional::PositionAware;
 pub trait ReadSelf: Sized {
     fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self>;
 
-    fn from_slice(bytes: &[u8]) -> io::Result<Self> {
-        let mut buffer = Cursor::new(bytes);
+    fn from_bytes<B: AsRef<[u8]>>(bytes: &B) -> io::Result<Self> {
+        let mut buffer = Cursor::new(bytes.as_ref());
         Self::read_from(&mut buffer)
     }
 
@@ -91,16 +91,21 @@ impl<T: ReadSelf, const N: usize> ReadSelf for [T; N] {
     }
 }
 
-
-
-
-
 #[doc(hidden)]
 macro_rules! impl_read_tuple {
     ($($generic:ident)*) => {
         impl<$($generic: ?Sized + ReadSelf),*> ReadSelf for ($($generic),*) {
             fn read_from<Buf: Read + PositionAware>(buffer: &mut Buf) -> io::Result<Self> {
                 Ok(($(<$generic as ReadSelf>::read_from(buffer)?),*))
+            }
+        }
+
+        impl<$($generic: ?Sized + WriteSelf),*> WriteSelf for ($($generic),*) {
+            fn write_to<Buf: Write + PositionAware>(&self, buffer: &mut Buf) -> io::Result<()> {
+                #[allow(non_snake_case)]
+                let ($($generic),*) = self;
+                $(<$generic as WriteSelf>::write_to($generic, buffer)?;)*
+                Ok(())
             }
         }
     };
@@ -133,7 +138,7 @@ impl<T: ReadIntoSelf> ReadIntoSelf for [T] {
     }
 }
 
-impl<'a, T: 'a + ReadIntoSelf, I: Iterator<Item=&'a mut T>> ReadIntoSelf for I {
+impl<'a, T: 'a + ReadIntoSelf, I: Iterator<Item = &'a mut T>> ReadIntoSelf for I {
     fn read_into<B: Read + PositionAware>(&mut self, buffer: &mut B) -> io::Result<()> {
         for item in self {
             item.read_into(buffer)?;
@@ -144,4 +149,55 @@ impl<'a, T: 'a + ReadIntoSelf, I: Iterator<Item=&'a mut T>> ReadIntoSelf for I {
 
 pub trait WriteSelf: Sized {
     fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()>;
+}
+
+impl WriteSelf for u8 {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        buffer.write_u8(*self)
+    }
+}
+
+impl WriteSelf for i8 {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        buffer.write_i8(*self)
+    }
+}
+
+impl<T: ?Sized> WriteSelf for PhantomData<T> {
+    fn write_to<B: Write + PositionAware>(&self, _: &mut B) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl WriteSelf for () {
+    fn write_to<B: Write + PositionAware>(&self, _: &mut B) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<T: ?Sized + WriteSelf> WriteSelf for Box<T> {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        T::write_to(&*self, buffer)
+    }
+}
+
+impl<T: ?Sized + WriteSelf> WriteSelf for Arc<T> {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        T::write_to(&*self, buffer)
+    }
+}
+
+impl<T: ?Sized + WriteSelf> WriteSelf for Rc<T> {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        T::write_to(&*self, buffer)
+    }
+}
+
+impl<T: WriteSelf, const N: usize> WriteSelf for [T; N] {
+    fn write_to<B: Write + PositionAware>(&self, buffer: &mut B) -> io::Result<()> {
+        for item in self {
+            item.write_to(buffer)?;
+        }
+        Ok(())
+    }
 }

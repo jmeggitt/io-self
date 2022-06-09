@@ -1,47 +1,8 @@
-use std::ffi::{CStr, CString};
 use crate::{PositionAware, ReadIntoSelf, ReadSelf, WriteSelf};
+use std::ffi::{CStr, CString};
 use std::io;
 use std::io::{Read, Write};
 use std::ops::{Deref, DerefMut};
-
-#[macro_export]
-macro_rules! grammar {
-    // Case where multiple structs are defined within the macro
-    (
-        $($(#[$($macros:tt)+])*
-        $pub:vis struct $name:ident {
-            $($(#[$($field_macros:tt)+])* $field_vis:vis $field:ident: $type:ty),* $(,)?
-        })+
-    ) => {
-        $(simple_grammar!{
-            @impl $(#[$($macros)+])*
-            $pub struct $name {
-                $($(#[$($field_macros)+])*
-                $field_vis $field: $type),*
-            }
-        })+
-    };
-    // Implement the type and trait for a single struct
-    (@impl
-        $(#[$($macros:tt)+])*
-        $pub:vis struct $name:ident { $
-            ($(#[$($field_macros:tt)+])* $field_vis:vis $field:ident: $type:ty),* $(,)?
-        }
-    ) => {
-        // Define the struct as passed to the macro
-        $(#[$($macros)+])*
-        $pub struct $name {
-            $($(#[$($field_macros)+])*
-            $field_vis $field: $type),*
-        }
-
-        impl $crate::ReadSelf for $name {
-            fn read<T: std::io::Read>(buffer: &mut T) -> io::Result<Self> {
-                Ok($name { $($field: <$type as Readable>::read(buffer)?),+ })
-            }
-        }
-    };
-}
 
 const IO_CHUNK_SIZE: usize = 512;
 
@@ -76,7 +37,6 @@ pub struct Padding<const N: usize>;
 
 impl<const N: usize> ReadSelf for Padding<N> {
     fn read_from<B: Read>(buffer: &mut B) -> io::Result<Self> {
-        // Self::consume_padding(buffer)?;
         consume_bytes(buffer, N)?;
         Ok(Padding)
     }
@@ -84,7 +44,6 @@ impl<const N: usize> ReadSelf for Padding<N> {
 
 impl<const N: usize> ReadIntoSelf for Padding<N> {
     fn read_into<B: Read>(&mut self, buffer: &mut B) -> io::Result<()> {
-        // Self::consume_padding(buffer)
         consume_bytes(buffer, N)
     }
 }
@@ -92,7 +51,6 @@ impl<const N: usize> ReadIntoSelf for Padding<N> {
 impl<const N: usize> WriteSelf for Padding<N> {
     fn write_to<B: Write>(&self, buffer: &mut B) -> io::Result<()> {
         write_padding(buffer, 0, N)
-        // Self::apply_padding(buffer, 0)
     }
 }
 
@@ -147,7 +105,6 @@ impl<const N: u64, const P: u8> WriteSelf for PadToAlign<N, P> {
     }
 }
 
-
 pub struct ByteTerminatedVec<T, const TERMINATOR: u8 = b'\0'> {
     inner: Vec<T>,
 }
@@ -171,8 +128,6 @@ impl<T, const N: u8> DerefMut for ByteTerminatedVec<T, N> {
         &mut self.inner
     }
 }
-
-
 
 impl ReadSelf for CString {
     fn read_from<B: Read + PositionAware>(_buffer: &mut B) -> io::Result<Self> {

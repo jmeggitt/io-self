@@ -1,8 +1,8 @@
 #![allow(dead_code)]
-use io_self_derive::ReadSelf;
+use io_self_derive::{ReadSelf, WriteSelf};
 
-#[derive(ReadSelf)]
-#[io_self(endian="big")]
+#[derive(ReadSelf, WriteSelf)]
+#[io_self(endian = "big")]
 pub struct Foo {
     a: [u64; 6],
 }

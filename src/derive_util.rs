@@ -1,10 +1,10 @@
 //! Helper traits to help with derive macos
-use std::io::{self, Read, Write};
-use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt};
 use crate::{PositionAware, ReadSelf, WriteSelf};
+use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt};
+use std::io::{self, Read, Write};
 
 #[doc(hidden)]
-pub use byteorder::{LittleEndian, BigEndian};
+pub use byteorder::{BigEndian, LittleEndian};
 
 pub trait ReadSelfEndian<O>: Sized {
     fn read_from<B: Read + PositionAware>(buffer: &mut B) -> io::Result<Self>;
@@ -59,7 +59,3 @@ impl_for! {
     i64: read_i64, write_i64;
     i128: read_i128, write_i128
 }
-
-
-
-

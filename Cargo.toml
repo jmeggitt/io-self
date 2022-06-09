@@ -16,7 +16,3 @@ default = []
 [dependencies]
 byteorder = "1.4.3"
 smallvec = "1.8.0"
-
-[dependencies.packed_struct]
-version = "0.10.0"
-optional = true

@@ -1,10 +1,10 @@
 #![allow(dead_code)]
-use io_self_derive::ReadSelf;
+use io_self_derive::{ReadSelf, WriteSelf};
 
-#[derive(ReadSelf)]
+#[derive(ReadSelf, WriteSelf)]
 pub struct Foo;
 
-#[derive(ReadSelf)]
+#[derive(ReadSelf, WriteSelf)]
 pub struct Bar {}
 
 fn main() {}
