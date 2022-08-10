@@ -1,4 +1,4 @@
-use crate::attr::{Endian, FieldOpts, Opts, VariantOpts};
+use crate::attr::{FieldOpts, Opts, VariantOpts};
 use darling::{FromDeriveInput, FromField, FromVariant};
 use proc_macro2::{self, Ident, TokenStream};
 use quote::{quote, quote_spanned};
@@ -37,12 +37,24 @@ pub fn derive_read(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     })
 }
 
-fn read_for_type(name: &Type, endian: Option<Endian>) -> TokenStream {
+fn read_for_type(name: &Type, approach: &TokenStream, prefix_length: Option<Type>) -> TokenStream {
+    if let Some(prefix) = prefix_length {
+        let read_len = read_for_type(&prefix, approach, None);
+        let item_count = try_from(&parse_quote!(usize), &prefix, &quote!(raw_len));
+
+        return quote_spanned!(name.span() => {
+            let raw_len = #read_len;
+            let length = #item_count;
+
+            ::io_self::derive_util::read_with_length(buffer, length, <_ as #approach>::read_from)?
+        });
+    }
+
     match name {
         Type::Array(arr) => {
             let arr_type = &*arr.elem;
             let arr_len = &arr.len;
-            let read_element = read_for_type(arr_type, endian);
+            let read_element = read_for_type(arr_type, approach, None);
             quote_spanned! {
                 name.span() =>
                 unsafe {
@@ -58,22 +70,10 @@ fn read_for_type(name: &Type, endian: Option<Endian>) -> TokenStream {
             }
         }
         Type::Tuple(tuple) => {
-            let fields = tuple.elems.iter().map(|f| read_for_type(f, endian));
+            let fields = tuple.elems.iter().map(|f| read_for_type(f, approach, None));
             quote_spanned!(name.span() => ( #(#fields,)*) )
         }
-        x => {
-            let approach = match endian {
-                None => quote!(io_self::ReadSelf),
-                Some(Endian::Little) => {
-                    quote!(io_self::derive_util::ReadSelfEndian<io_self::derive_util::LittleEndian>)
-                }
-                Some(Endian::Big) => {
-                    quote!(io_self::derive_util::ReadSelfEndian<io_self::derive_util::BigEndian>)
-                }
-            };
-
-            quote_spanned! {x.span() => <#x as #approach>::read_from(buffer)? }
-        }
+        x => quote_spanned! {x.span() => <#x as #approach>::read_from(buffer)? },
     }
 }
 
@@ -81,29 +81,11 @@ fn derive_read_fields(data_fields: &Fields, opts: &Opts) -> TokenStream {
     match data_fields {
         Fields::Named(fields) => {
             let assigned_fields = fields.named.iter().map(|f| {
-                let field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
-                if let Some(prefix) = field_opts.length_prefix_type() {
-                    let read_len = read_for_type(&prefix, opts.endianness());
-                    let item_count = try_from(
-                        &parse_quote!(usize),
-                        &prefix,
-                        &quote!(raw_len),
-                    );
-
-                    let approach = opts.trait_usage(true);
-                    let name = &f.ident;
-
-                    quote_spanned!(f.span() => #name: {
-                        let raw_len = #read_len;
-                        let length = #item_count;
-
-                        ::io_self::derive_util::read_with_length(buffer, length, <_ as #approach>::read_from)?
-                    })
-                } else {
-                    let name = &f.ident;
-                    let formula = read_for_type(&f.ty, opts.endianness());
-                    quote_spanned!(f.span() => #name: #formula)
-                }
+                let mut field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
+                field_opts.with_endian(opts);
+                let name = &f.ident;
+                let formula = read_for_type(&f.ty, &field_opts.trait_usage(true), field_opts.length_prefix_type());
+                quote_spanned!(f.span() => #name: #formula)
             });
 
             quote_spanned!(data_fields.span() => { #(#assigned_fields,)* })
@@ -112,7 +94,12 @@ fn derive_read_fields(data_fields: &Fields, opts: &Opts) -> TokenStream {
             let assigned_fields = fields
                 .unnamed
                 .iter()
-                .map(|f| read_for_type(&f.ty, opts.endianness()));
+                .map(|f| {
+                    let mut field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
+                    field_opts.with_endian(opts);
+
+                    read_for_type(&f.ty, &field_opts.trait_usage(true), field_opts.length_prefix_type())
+                });
             quote_spanned!(data_fields.span() => ( #(#assigned_fields,)*) )
         }
         Fields::Unit => quote_spanned!(data_fields.span() => ),
@@ -130,9 +117,8 @@ fn read_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
             let tag_type = opts
                 .tag_type()
                 .expect("Enums must have a tag type to distinguish variants");
-            let endian = opts.endianness();
 
-            let tag = read_for_type(&tag_type, endian);
+            let tag = read_for_type(&tag_type, &opts.trait_usage(true), None);
 
             let variants = enum_data.variants.iter().map(|variant| {
                 let tag = VariantOpts::from_variant(variant)
@@ -145,7 +131,7 @@ fn read_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
             });
 
             if let Some(prefix_type) = opts.length_prefix_type() {
-                let read_prefix = read_for_type(&prefix_type, endian);
+                let read_prefix = read_for_type(&prefix_type, &opts.trait_usage(true), None);
                 let read_len = try_from(&parse_quote!(usize), &prefix_type, &read_prefix);
 
                 quote_spanned! {name.span() => {
@@ -171,12 +157,22 @@ fn read_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
     }
 }
 
-fn write_for_type(ty: &Type, name: &TokenStream, endian: Option<Endian>) -> TokenStream {
+fn write_for_type(ty: &Type, name: &TokenStream, approach: &TokenStream, prefix_length: Option<Type>) -> TokenStream {
+    if let Some(prefix) = prefix_length {
+        return quote_spanned!(ty.span() =>
+            ::io_self::derive_util::write_with_prefix::<#prefix, #ty, _, _, _, _>(
+                #name,
+                buffer,
+                <_ as #approach>::write_to,
+                <_ as #approach>::write_to)?;
+        );
+    }
+
     match ty {
         Type::Array(arr) => {
             let arr_type = &*arr.elem;
             let item = quote!(item);
-            let write_element = write_for_type(arr_type, &item, endian);
+            let write_element = write_for_type(arr_type, &item, approach, None);
 
             quote_spanned!( name.span() => for #item in #name { #write_element } )
         }
@@ -184,23 +180,11 @@ fn write_for_type(ty: &Type, name: &TokenStream, endian: Option<Endian>) -> Toke
             let fields = tuple.elems.iter().enumerate().map(|(idx, f)| {
                 let index = Index::from(idx);
                 let item_name = quote!(#name.#index);
-                write_for_type(f, &item_name, endian)
+                write_for_type(f, &item_name, approach, None)
             });
             quote_spanned!(name.span() => #(#fields)* )
         }
-        x => {
-            let approach = match endian {
-                None => quote!(io_self::WriteSelf),
-                Some(Endian::Little) => quote!(
-                    io_self::derive_util::WriteSelfEndian<io_self::derive_util::LittleEndian>
-                ),
-                Some(Endian::Big) => {
-                    quote!(io_self::derive_util::WriteSelfEndian<io_self::derive_util::BigEndian>)
-                }
-            };
-
-            quote_spanned! {x.span() => <#x as #approach>::write_to(#name, buffer)?; }
-        }
+        x => quote_spanned! {x.span() => <#x as #approach>::write_to(#name, buffer)?; }
     }
 }
 
@@ -244,20 +228,7 @@ fn derive_write_fields(
                 };
 
                 let field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
-                if let Some(prefix) = field_opts.length_prefix_type() {
-                    let approach = opts.trait_usage(false);
-                    let ty = &f.ty;
-
-                    quote_spanned!(f.span() =>
-                        ::io_self::derive_util::write_with_prefix::<#prefix, #ty, _, _, _, _>(
-                            #ident,
-                            buffer,
-                            <_ as #approach>::write_to,
-                            <_ as #approach>::write_to)?;
-                    )
-                } else {
-                    write_for_type(&f.ty, &ident, opts.endianness())
-                }
+                write_for_type(&f.ty, &ident, &opts.trait_usage(false), field_opts.length_prefix_type())
             });
 
             quote_spanned!(data_fields.span() => #(#assigned_fields)*)
@@ -270,7 +241,8 @@ fn derive_write_fields(
                     let index = Index::from(idx);
                     quote!(#name.#index)
                 };
-                write_for_type(&f.ty, &path, opts.endianness())
+                let field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
+                write_for_type(&f.ty, &path, &opts.trait_usage(false), field_opts.length_prefix_type())
             });
             quote_spanned!(data_fields.span() => #(#assigned_fields)* )
         }
@@ -289,13 +261,12 @@ fn write_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
             let tag_type = opts
                 .tag_type()
                 .expect("Enums must have a tag type to distinguish variants");
-            let endian = opts.endianness();
 
             let variants = enum_data.variants.iter().map(|variant| {
                 let tag = VariantOpts::from_variant(variant)
                     .expect("Unexpect attribute fields")
                     .tag();
-                let write_tag = write_for_type(&tag_type, &quote!(&variant_tag), endian);
+                let write_tag = write_for_type(&tag_type, &quote!(&variant_tag), &opts.trait_usage(false), None);
 
                 let variant_name = &variant.ident;
                 let variant_match = derive_field_match(&variant.fields);
@@ -315,7 +286,7 @@ fn write_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
                     &parse_quote!(usize),
                     &quote!(obj_buffer.len()),
                 );
-                let write_prefix = write_for_type(&prefix_type, &quote!(&#body_len), endian);
+                let write_prefix = write_for_type(&prefix_type, &quote!(&#body_len), &opts.trait_usage(false), None);
 
                 quote_spanned! { name.span() =>
                     let mut obj_buffer = Vec::new();
@@ -387,5 +358,6 @@ mod tests {
         test_cases.pass("tests/06-tagged-enum.rs");
         test_cases.pass("tests/07-length-prefix.rs");
         test_cases.pass("tests/08-prefixed-vec.rs");
+        test_cases.pass("tests/09-field-specific-parsers.rs");
     }
 }
