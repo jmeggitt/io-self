@@ -1,6 +1,6 @@
 [package]
 name = "io_self_derive"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Jasper Meggitt <jasper.meggitt@gmail.com>"]
 edition = "2021"
 description = "Derive macros for the io_self crate."
