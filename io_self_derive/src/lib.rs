@@ -24,7 +24,7 @@ pub fn derive_read(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let built = read::read_self_body(&name, &input.data, opts);
+    let built = read::build_read(&name, &input.data, opts);
 
     proc_macro::TokenStream::from(quote! {
         impl #impl_generics ::io_self::ReadSelf for #name #ty_generics #where_clause {
@@ -53,7 +53,7 @@ pub fn derive_write(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let built = write::write_self_body(&name, &input.data, opts);
+    let built = write::build_write(&name, &input.data, opts);
 
     proc_macro::TokenStream::from(quote! {
         impl #impl_generics ::io_self::WriteSelf for #name #ty_generics #where_clause {

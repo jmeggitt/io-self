@@ -14,6 +14,64 @@ const TUPLE_NAME_PLACEHOLDER: &[&str] = &[
 ];
 
 
+
+pub fn build_write(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
+    match data {
+        Data::Struct(struct_data) => {
+            let parent = quote!(&self);
+            derive_write_fields(&struct_data.fields, &parent, &opts, false)
+        }
+        Data::Union(_) => panic!("Unable to derive for union"),
+        Data::Enum(enum_data) => {
+            let tag_type = opts
+                .tag_type()
+                .expect("Enums must have a tag type to distinguish variants");
+
+            let variants = enum_data.variants.iter().map(|variant| {
+                let tag = VariantOpts::from_variant(variant)
+                    .expect("Unexpect attribute fields")
+                    .tag();
+                let write_tag = write_for_type(&tag_type, &quote!(&variant_tag), &opts.trait_usage(false), None);
+
+                let variant_name = &variant.ident;
+                let variant_match = derive_field_match(&variant.fields);
+                let fields = derive_write_fields(&variant.fields, &quote!(), &opts, true);
+                quote! {
+                    #name::#variant_name #variant_match => {
+                        let variant_tag: #tag_type = #tag;
+                        #write_tag
+                        #fields
+                    }
+                }
+            });
+
+            if let Some(prefix_type) = opts.length_prefix_type() {
+                let body_len = util::try_from(
+                    &prefix_type,
+                    &parse_quote!(usize),
+                    &quote!(obj_buffer.len()),
+                );
+                let write_prefix = write_for_type(&prefix_type, &quote!(&#body_len), &opts.trait_usage(false), None);
+
+                quote_spanned! { name.span() =>
+                    let mut obj_buffer = Vec::new();
+                    { // Use temporary scope to re-use buffer ident
+                        let mut seekable_buffer = ::std::io::Cursor::new(&mut obj_buffer);
+                        let buffer = &mut seekable_buffer;
+                        match self { #(#variants,)* }
+                    }
+
+                    #write_prefix
+                    buffer.write_all(&obj_buffer[..])?;
+                }
+            } else {
+                quote_spanned!(name.span() => match self { #(#variants,)* })
+            }
+        }
+    }
+}
+
+
 fn write_for_type(ty: &Type, name: &TokenStream, approach: &TokenStream, prefix_length: Option<Type>) -> TokenStream {
     if let Some(prefix) = prefix_length {
         return quote_spanned!(ty.span() =>
@@ -79,8 +137,13 @@ fn derive_write_fields(
                     quote!(#name.#ident)
                 };
 
-                let field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
-                write_for_type(&f.ty, &ident, &opts.trait_usage(false), field_opts.length_prefix_type())
+                let mut field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
+                field_opts.with_endian(opts);
+
+                match field_opts.write_fn(&ident) {
+                    Some(v) => v,
+                    None => write_for_type(&f.ty, &ident, &opts.trait_usage(false), field_opts.length_prefix_type()),
+                }
             });
 
             quote_spanned!(data_fields.span() => #(#assigned_fields)*)
@@ -93,67 +156,16 @@ fn derive_write_fields(
                     let index = Index::from(idx);
                     quote!(#name.#index)
                 };
-                let field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
-                write_for_type(&f.ty, &path, &opts.trait_usage(false), field_opts.length_prefix_type())
+                let mut field_opts = FieldOpts::from_field(f).expect("Unexpect attribute fields");
+                field_opts.with_endian(opts);
+
+                match field_opts.write_fn(&path) {
+                    Some(v) => v,
+                    None => write_for_type(&f.ty, &path, &opts.trait_usage(false), field_opts.length_prefix_type()),
+                }
             });
             quote_spanned!(data_fields.span() => #(#assigned_fields)* )
         }
         Fields::Unit => quote_spanned!(data_fields.span() => ),
-    }
-}
-
-pub fn write_self_body(name: &Ident, data: &Data, opts: Opts) -> TokenStream {
-    match data {
-        Data::Struct(struct_data) => {
-            let parent = quote!(&self);
-            derive_write_fields(&struct_data.fields, &parent, &opts, false)
-        }
-        Data::Union(_) => panic!("Unable to derive for union"),
-        Data::Enum(enum_data) => {
-            let tag_type = opts
-                .tag_type()
-                .expect("Enums must have a tag type to distinguish variants");
-
-            let variants = enum_data.variants.iter().map(|variant| {
-                let tag = VariantOpts::from_variant(variant)
-                    .expect("Unexpect attribute fields")
-                    .tag();
-                let write_tag = write_for_type(&tag_type, &quote!(&variant_tag), &opts.trait_usage(false), None);
-
-                let variant_name = &variant.ident;
-                let variant_match = derive_field_match(&variant.fields);
-                let fields = derive_write_fields(&variant.fields, &quote!(), &opts, true);
-                quote! {
-                    #name::#variant_name #variant_match => {
-                        let variant_tag: #tag_type = #tag;
-                        #write_tag
-                        #fields
-                    }
-                }
-            });
-
-            if let Some(prefix_type) = opts.length_prefix_type() {
-                let body_len = util::try_from(
-                    &prefix_type,
-                    &parse_quote!(usize),
-                    &quote!(obj_buffer.len()),
-                );
-                let write_prefix = write_for_type(&prefix_type, &quote!(&#body_len), &opts.trait_usage(false), None);
-
-                quote_spanned! { name.span() =>
-                    let mut obj_buffer = Vec::new();
-                    { // Use temporary scope to re-use buffer ident
-                        let mut seekable_buffer = ::std::io::Cursor::new(&mut obj_buffer);
-                        let buffer = &mut seekable_buffer;
-                        match self { #(#variants,)* }
-                    }
-
-                    #write_prefix
-                    buffer.write_all(&obj_buffer[..])?;
-                }
-            } else {
-                quote_spanned!(name.span() => match self { #(#variants,)* })
-            }
-        }
     }
 }

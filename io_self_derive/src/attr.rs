@@ -8,16 +8,14 @@ use syn::Type;
 #[darling(default, attributes(io_self), forward_attrs(allow, doc, cfg))]
 pub struct Opts {
     endian: Option<String>,
-    tag: Option<String>,
-    length_prefix: Option<String>,
+    tag: Option<Type>,
+    length_prefix: Option<Type>,
 }
 
 impl Opts {
 
-    pub fn length_prefix_type(&self) -> Option<Type> {
-        let prefix = TokenStream::from_str(self.length_prefix.as_ref()?)
-            .expect("Unable to tokenize enum length prefix");
-        Some(syn::parse2(prefix).expect("Expected type"))
+    pub fn length_prefix_type(&self) -> Option<&Type> {
+        self.length_prefix.as_ref()
     }
 
     pub fn endianness(&self) -> Option<Endian> {
@@ -47,9 +45,8 @@ impl Opts {
         }
     }
 
-    pub fn tag_type(&self) -> Option<Type> {
-        let tag = TokenStream::from_str(self.tag.as_ref()?).unwrap();
-        Some(syn::parse2(tag).expect("Expected type"))
+    pub fn tag_type(&self) -> Option<&Type> {
+        self.tag.as_ref()
     }
 }
 
@@ -94,17 +91,7 @@ impl FieldOpts {
         let func = TokenStream::from_str(self.read_fn.as_ref()?)
             .expect("Unable to tokenize read_fn");
 
-        Some(quote!{{
-            #[inline(always)]
-            fn process<B, F>(buffer: &mut B, handler: F) -> ::std::io::Result<Self>
-                where B: ::std::io::Read + ::io_self::PositionAware,
-                      for<'a> F: FnOnce(&'a mut B) -> ::std::io::Result<Self> {
-                handler(buffer)
-            }
-
-            // Pass macro input through thin wrapper function to verify usage.
-            process(buffer, (#func))?
-        }})
+        Some(quote!{ (#func)(buffer)? })
     }
 
 
@@ -112,17 +99,7 @@ impl FieldOpts {
         let func = TokenStream::from_str(self.write_fn.as_ref()?)
             .expect("Unable to tokenize read_fn");
 
-        Some(quote!{{
-            #[inline(always)]
-            fn process<T, B, F>(item: &T, buffer: &mut B, handler: F) -> ::std::io::Result<Self>
-                where B: ::std::io::Write + ::io_self::PositionAware,
-                      for<'a> F: FnOnce(&'a T, &'a mut B) -> ::std::io::Result<()> {
-                handler(item, buffer)
-            }
-
-            // Pass macro input through thin wrapper function to verify usage.
-            process(#name, buffer, (#func))?
-        }})
+        Some(quote!{ (#func)(#name, buffer)? })
     }
 
     pub fn with_endian(&mut self, opts: &Opts) {
